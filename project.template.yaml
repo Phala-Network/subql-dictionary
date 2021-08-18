@@ -1,9 +1,10 @@
 specVersion: 0.0.1
-description: A subquery project provide dictionary data & service for a substrate-based network
-repository: 'https://github.com/subquery/subql-dictionary'
+description: ""
+repository: "https://github.com/Phala-Network/subql-dictionary"
 schema: ./schema.graphql
 network:
-  endpoint: 'wss://polkadot.api.onfinality.io/public-ws'
+  endpoint: ""
+  types: {}
 dataSources:
   - name: main
     kind: substrate/Runtime
