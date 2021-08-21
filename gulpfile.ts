@@ -1,60 +1,98 @@
+import { typesChain } from '@phala/typedefs'
+import { OverrideBundleType, RegistryTypes } from '@polkadot/types/types'
+import { config as configureDotEnv } from 'dotenv'
 import execa from 'execa'
-import { readFile, writeFile } from 'fs/promises'
+import { Stats } from 'fs'
+import { readFile, stat, writeFile } from 'fs/promises'
 import { series } from 'gulp'
-import yaml from 'js-yaml'
+import yaml, { JSON_SCHEMA } from 'js-yaml'
 import { resolve } from 'path'
 
-const DEFAULT_NETWORK_ENDPOINT = 'wss://khala.phala.network/ws'
-const DEFAULT_NETWORK_TYPEDEFS = 'khala'
-const DEFAULT_START_BLOCK = 1
+configureDotEnv()
+
+const DEFAULT_NETWORK_ENDPOINT = 'wss://khala-api.phala.network/ws'
+
+const startBlockEnv = process.env['START_BLOCK']
 
 const endpoint = process.env['NETWORK_ENDPOINT'] ?? DEFAULT_NETWORK_ENDPOINT
-const startBlock = /^\d+$/.test(process.env['START_BLOCK']) ? parseInt(process.env['START_BLOCK']) : DEFAULT_START_BLOCK
-const typedefsRef = process.env['NETWORK_TYPEDEFS'] ?? DEFAULT_NETWORK_TYPEDEFS
+const startBlock = /^\d+$/.test(startBlockEnv) ? parseInt(startBlockEnv) : undefined
 
 interface Project {
     dataSources?: [{ startBlock?: number }]
     network?: {
         endpoint?: string
-        typedefs?: unknown
+        typesBundle?: OverrideBundleType
+        typesChain?: Record<string, RegistryTypes>
     }
 }
 
+const tryLoadTypesBundle = (async (): Promise<OverrideBundleType | undefined> => {
+    let bundleStat: Stats
+    try {
+        const bundleStat = await stat(resolve(__dirname, 'typesBundle.ts'))
+    } catch (error) {
+        console.error('Cannot stat "typesBundle.ts":', error.message)
+        return undefined
+    }
+
+    try {
+        if (bundleStat.isFile()) {
+            return require('./typesBundle').typesBundle
+        } else {
+            throw new Error('typesBundle.ts is not a file')
+        }
+    } catch (error) {
+        console.error('Failed to import "typesBundle.ts":', error)
+        return undefined
+    }
+})()
+
 export const configure = async (): Promise<void> => {
-    console.info('Using typedefs:', typedefsRef)
-    console.info('Using endpoint:', endpoint)
+    console.info('Configuring project using chain endpoint:', endpoint)
 
-    const template = yaml.load((await readFile(resolve(__dirname, 'project.template.yaml'))).toString()) as Project
+    const project = yaml.load((await readFile(resolve(__dirname, 'project.template.yaml'))).toString()) as Project
 
-    const registry = await import('@phala/typedefs')
-    const types = registry[typedefsRef] as unknown
+    // set startBlock from environment variable
 
-    const dataSources = template.dataSources.map((dataSource) => ({
-        ...dataSource,
-        startBlock,
-    }))
+    if (project.dataSources instanceof Array && typeof startBlock === 'number') {
+        project.dataSources.forEach((dataSource) => {
+            dataSource.startBlock = startBlock
+        })
+    }
 
-    const network = {
-        ...template.network,
+    // configure typedefs and node endpoint
+
+    const typesBundle = await tryLoadTypesBundle
+
+    project.network = {
+        ...project.network,
         endpoint,
-        types,
     }
 
-    const project = {
-        ...template,
-        dataSources,
-        network,
+    if (typesBundle !== undefined) {
+        project.network.typesBundle = typesBundle
+    } else {
+        project.network.typesChain = typesChain
     }
 
-    await writeFile(resolve(__dirname, 'project.yaml'), yaml.dump(project))
+    // write project.yaml
+
+    await writeFile(
+        resolve(__dirname, 'project.yaml'),
+        yaml.dump(project, {
+            lineWidth: -1,
+            noRefs: true,
+            schema: JSON_SCHEMA,
+        })
+    )
 }
 
 export const codegen = async (): Promise<void> => {
-    await execa('npx', ['subql', 'codegen'])
+    await execa('npx', ['subql', 'codegen', '--file', resolve(__dirname, 'project.json')])
 }
 
-export const build = async (): Promise<void> => {
+export const typescript = async (): Promise<void> => {
     await execa('npx', ['tsc', '--build'])
 }
 
-export const docker = series(configure, codegen, build)
+export const docker = series(configure, codegen, typescript)
